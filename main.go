@@ -6,10 +6,9 @@ import (
 	"io"
 	"log"
 	"os"
+	"runtime"
 	"sync"
 	"time"
-
-	"github.com/bits-and-blooms/bitset"
 )
 
 func main() {
@@ -19,6 +18,12 @@ func main() {
 
 	// File path to be read
 	filePath := os.Args[1]
+	isTest := false
+	if len(os.Args) == 3 && os.Args[2] == "test" {
+		isTest = true
+		fmt.Println("Running in test mode")
+	}
+
 	// Get the file size
 	fileInfo, err := os.Stat(filePath)
 	if err != nil {
@@ -28,42 +33,37 @@ func main() {
 	fileSize := fileInfo.Size()
 
 	// Decide the number of workers and chunk size
-	workers := 10 // TODO should be based on cpu and disk type
+	workers := runtime.NumCPU()
+	//setting workers to 4 for integration test
+	if isTest {
+		workers = 2
+	}
 	chunkSize := fileSize / int64(workers)
 
 	var readerWg sync.WaitGroup
-	var workerCount = make(chan *bitset.BitSet)
 
 	start := time.Now()
 
-	//global bitset
-	size := uint(1) << 32
-	resultBitSet := bitset.New(size)
-	go func() {
-		// TODO we can have just one bitset and sharing it accross routines applying locks
-		for val := range workerCount {
-			resultBitSet = resultBitSet.Union(val)
-		}
-	}()
+	resultBitSet := NewShardedBitset()
 
-	// Start reader gouroutines
+	// Starting gouroutines, assigning start and end of each chunk of the file
 	for i := 0; i < workers; i++ {
 		start := int64(i) * chunkSize
 		end := start + chunkSize
 		if i == workers-1 {
-			end = fileSize // last routine reads till the end
+			end = fileSize // last routine reads till the end of file
 		}
 		readerWg.Add(1)
-		go worker(start, end, i, filePath, &readerWg, workerCount)
+		time.Sleep(500 * time.Microsecond)
+		go worker(start, end, i, filePath, &readerWg, resultBitSet)
 	}
 	readerWg.Wait()
-	close(workerCount)
 
 	elapsed := time.Since(start)
-	fmt.Println("File processing complete. Total count", resultBitSet.Count(), "Time elapsed", elapsed)
+	fmt.Printf("File processing complete.\nUnique IP count: %d\nTime elapsed: %s", resultBitSet.Count(), elapsed)
 }
 
-func worker(start, end int64, id int, filePath string, wg *sync.WaitGroup, workerBitset chan<- *bitset.BitSet) {
+func worker(start, end int64, id int, filePath string, wg *sync.WaitGroup, bitset *ShardedBitset) {
 	defer wg.Done()
 
 	file, err := os.Open(filePath)
@@ -91,47 +91,29 @@ func worker(start, end int64, id int, filePath string, wg *sync.WaitGroup, worke
 		start += int64(len(line))
 	}
 
-	size := uint(1) << 32
-	bitset := bitset.New(size)
-
 	for {
 		line, err := reader.ReadBytes('\n')
-		intIP := ipBytesToInt(line)
-		bitset.Set(uint(intIP))
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
+		if err != nil && err != io.EOF {
 			log.Fatalf("Worker %d failed to read: %v\n", id, err)
 		}
+		//egde case, last element in file
+		if err == io.EOF && len(line) == 0 {
+			break
+		}
 
-		start += int64(len(line))
+		ipIntArr := IpToIntArray(line)
+		lastThreeInt, err := LastThreeBytesToInt(ipIntArr[1:])
+		if err != nil {
+			log.Fatalf("Worker %d error converting bytes to int %s\n", id, err)
+		}
+
+		bitset.Set(ipIntArr[0], lastThreeInt)
+
 		//this exit condition is after the read since we want to process additional line
 		if start >= end {
 			break
 		}
-	}
-	//communicating local bitset
-	workerBitset <- bitset
-}
+		start += int64(len(line))
 
-func ipBytesToInt(ip []byte) uint32 {
-	var result uint32
-	pointer := 0
-	octet := 3
-	for i := 0; i < len(ip); i++ {
-		if ip[i] == '.' || ip[i] == '\n' {
-			octetSegment := ip[pointer:i]
-			val := 0
-			for i := 0; i < len(octetSegment); i++ {
-				// Subtracting the ASCII value, getting digit
-				digit := int(octetSegment[i] - '0')
-				val = val*10 + digit
-			}
-			result |= uint32(val) << (uint32(octet) * 8)
-			pointer = i + 1
-			octet--
-		}
 	}
-	return result
 }
