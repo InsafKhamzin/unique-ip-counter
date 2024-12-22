@@ -15,7 +15,6 @@ func main() {
 	if len(os.Args) < 2 {
 		log.Fatal("path to file needs to be provided")
 	}
-
 	// File path to be read
 	filePath := os.Args[1]
 	isTest := false
@@ -23,7 +22,6 @@ func main() {
 		isTest = true
 		fmt.Println("Running in test mode")
 	}
-
 	// Get the file size
 	fileInfo, err := os.Stat(filePath)
 	if err != nil {
@@ -31,7 +29,6 @@ func main() {
 	}
 
 	fileSize := fileInfo.Size()
-
 	// Decide the number of workers and chunk size
 	workers := runtime.NumCPU()
 	//setting workers to 4 for integration test
@@ -40,12 +37,11 @@ func main() {
 	}
 	chunkSize := fileSize / int64(workers)
 
-	var readerWg sync.WaitGroup
-
+	//timer
 	start := time.Now()
 
+	var readerWg sync.WaitGroup
 	resultBitSet := NewShardedBitset()
-
 	// Starting gouroutines, assigning start and end of each chunk of the file
 	for i := 0; i < workers; i++ {
 		start := int64(i) * chunkSize
@@ -114,6 +110,5 @@ func worker(start, end int64, id int, filePath string, wg *sync.WaitGroup, bitse
 			break
 		}
 		start += int64(len(line))
-
 	}
 }
